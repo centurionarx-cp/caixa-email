@@ -62,3 +62,4 @@ launchSettings.json
 .claude/bootstrap-skills.log.old
 .claude/.bootstrap-skills.lock/
 !.claude/skills/catalogo/
+.claude/skills/

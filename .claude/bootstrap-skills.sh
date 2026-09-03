@@ -13,7 +13,7 @@
 #   para resolver. Um original so elimina essa classe de defeito.
 #
 # PLACEHOLDERS trocados na instalacao:
-#   https://github.com/sintektec/skills-globais.git   URL do catalogo
+#   https://github.com/centurionarx-cp/skills-globais.git https://github.com/sintektec/skills-globais.git  URLs do catalogo, separadas por espaco, tentadas em ordem
 #   "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"  expressao shell que resolve a raiz (projeto ou $HOME)
 #   bootstrap-skills.log   nome do arquivo de log dentro de .claude/
 #   projeto       "projeto" ou "global"
@@ -27,7 +27,12 @@
 
 set -uo pipefail
 
-REPO_URL="https://github.com/sintektec/skills-globais.git"
+# Lista, nao URL unica. Uma transferencia de dono no GitHub muda o caminho
+# canonico, mas as credenciais de container remoto continuam escopadas ao
+# caminho ANTIGO enquanto o ambiente nao for reanexado -- medido: o nome novo
+# responde "could not read Username" onde o antigo clona sem problema. Com uma
+# URL so, transferir o repositorio derruba toda sessao remota de uma vez.
+REPO_URLS="https://github.com/centurionarx-cp/skills-globais.git https://github.com/sintektec/skills-globais.git"
 MODO="projeto"
 ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CLONE="$ROOT/.claude/skills-globais-repo"
@@ -219,30 +224,47 @@ if ! clone_ok; then
   # Clona para um caminho temporario e so entao move. Assim o caminho final ou
   # tem um clone completo, ou nao existe -- nunca um pela metade. Um SIGKILL no
   # meio deixa no maximo um .tmp.NNN, recolhido na proxima execucao.
-  tmp="$CLONE.tmp.$$"
-  rm -rf "$tmp" 2>/dev/null || true
-  log "clonando $REPO_URL"
-  if git_out=$(git clone --depth 1 "$REPO_URL" "$tmp" 2>&1); then
-    git_rc=0
-    rm -rf "$CLONE" 2>/dev/null || true
-    if ! mv "$tmp" "$CLONE" 2>/dev/null; then
+  #
+  # Tenta cada candidata em ordem. A primeira e o caminho canonico atual; as
+  # seguintes existem para o intervalo entre transferir o repositorio e reanexar
+  # os ambientes, quando so o nome antigo e alcancavel.
+  git_rc=1
+  ordem=0
+  for url in $REPO_URLS; do
+    ordem=$((ordem + 1))
+    tmp="$CLONE.tmp.$$"
+    rm -rf "$tmp" 2>/dev/null || true
+    log "clonando $url"
+    if git_out=$(git clone --depth 1 "$url" "$tmp" 2>&1); then
+      rm -rf "$CLONE" 2>/dev/null || true
+      if mv "$tmp" "$CLONE" 2>/dev/null; then
+        git_rc=0
+        # Cair numa candidata de reserva funciona, mas e sinal de que a
+        # principal parou de servir -- e o redirecionamento do GitHub que a
+        # sustenta morre se alguem reivindicar o nome antigo.
+        if [ "$ordem" -gt 1 ]; then
+          log "AVISO: a URL principal falhou; usei a candidata $ordem ($url)."
+          log "  Reanexe o repositorio ao ambiente para voltar a principal."
+        fi
+        break
+      fi
       log "ERRO: clone concluido mas nao consegui move-lo para $CLONE"
       rm -rf "$tmp" 2>/dev/null || true
+      break
     fi
-  else
-    git_rc=$?
     rm -rf "$tmp" 2>/dev/null || true
-  fi
+    log "falhou: $url"
+  done
 fi
 
 if [ "$git_rc" -ne 0 ]; then
   log "$git_out"
   case "$git_out" in
     *"Authentication failed"* | *"could not read Username"* | *"Invalid username or token"* | *"not found"* | *"Permission denied"* | *"Repository not found"*)
-      log "ERRO: sem acesso a $REPO_URL."
+      log "ERRO: nenhuma das URLs candidatas respondeu."
       if [ "$MODO" = "projeto" ]; then
         log "  Em container remoto o git so alcanca repositorios ANEXADOS ao"
-        log "  ambiente. Anexe sintektec/skills-globais e reabra a sessao."
+        log "  ambiente. Anexe centurionarx-cp/skills-globais e reabra a sessao."
       fi
       log "  Fora de container: gh auth login && gh auth setup-git"
       ;;
